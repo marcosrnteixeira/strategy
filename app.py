@@ -10,8 +10,9 @@ st.caption("All balance sheet figures are in thousands USD, consistent with the 
 
 st.markdown(
     """
-Esta aplicação estima o preço implícito da MSTR a partir do preço futuro do BTC e de um múltiplo MNAV, 
-utilizando a mesma convenção de unidades do balanço consolidado: **thousands USD** para cash, dívida, dividendos e claims.
+Esta aplicação estima o preço implícito da MSTR a partir do preço futuro do BTC e de um múltiplo MNAV.
+A secção de stress test mostra se a Strategy cobre as obrigações com a USD Reserve, e apenas depois avalia
+se é necessário cortar dividendos ou vender BTC.
 """
 )
 
@@ -19,14 +20,20 @@ st.sidebar.header("Assumptions")
 
 btc_holdings = st.sidebar.number_input("BTC holdings (BTC)", value=717131.0, step=1000.0)
 diluted_shares = st.sidebar.number_input("Diluted shares (shares)", value=344.897e6, step=1e6)
-future_btc_price = st.sidebar.number_input("Future BTC price (USD/BTC)", value=150000.0, step=1000.0, min_value=10000.0, max_value=500000.0)
+future_btc_price = st.sidebar.number_input(
+    "Future BTC price (USD/BTC)",
+    value=150000.0,
+    step=1000.0,
+    min_value=10000.0,
+    max_value=500000.0
+)
 mnav = st.sidebar.slider("MNAV multiple", 0.2, 3.0, 1.2, 0.05)
 
-cash_th = st.sidebar.number_input("Cash / USD reserve (thousands USD)", value=2301470.0, step=1000.0)
-debt_th = st.sidebar.number_input("Debt (thousands USD)", value=8254000.0, step=1000.0)
-preferred_claims_th = st.sidebar.number_input("Preferred claims / buffer (thousands USD)", value=0.0, step=1000.0)
+cash_th = st.sidebar.number_input("Cash / USD reserve (thousands USD)", value=2250000.0, step=1000.0)
+debt_th = st.sidebar.number_input("Debt (thousands USD)", value=8250000.0, step=1000.0)
+preferred_claims_th = st.sidebar.number_input("Preferred claims / buffer (thousands USD)", value=8470000.0, step=1000.0)
 annual_pref_dividends_th = st.sidebar.number_input("Annual preferred dividends (thousands USD)", value=381367.0, step=1000.0)
-annual_interest_th = st.sidebar.number_input("Annual debt interest (thousands USD)", value=64968.0, step=1000.0)
+annual_interest_th = st.sidebar.number_input("Annual debt interest (thousands USD)", value=36200.0, step=1000.0)
 
 cash_usd = cash_th * 1000.0
 debt_usd = debt_th * 1000.0
@@ -73,11 +80,10 @@ st.plotly_chart(fig, use_container_width=True)
 
 st.subheader("Liquidity stress test")
 
-shock = st.slider("BTC drawdown", 0, 90, 50, 5)
+shock = st.slider("BTC drawdown", 0, 90, 35, 5)
 shocked_btc = future_btc_price * (1 - shock / 100)
 annual_obligations_th = annual_pref_dividends_th + annual_interest_th
-available_liquidity_th = cash_th
-liquidity_gap_th = annual_obligations_th - available_liquidity_th
+liquidity_gap_th = annual_obligations_th - cash_th
 btc_to_sell = max(0.0, (liquidity_gap_th * 1000.0) / shocked_btc) if shocked_btc > 0 else np.nan
 
 c1, c2, c3 = st.columns(3)
@@ -86,15 +92,15 @@ c2.metric("Annual obligations (thousands USD)", f"{annual_obligations_th:,.0f}")
 c3.metric("BTC to sell to cover gap", f"{btc_to_sell:,.2f}")
 
 st.write(
-    "If annual obligations exceed available liquidity, the model estimates how much BTC would need to be sold to cover the shortfall."
+    "If annual obligations exceed available liquidity, the model estimates how much BTC would need to be sold to close the shortfall after using the USD Reserve."
 )
 
 st.subheader("3 stress scenarios")
 
 scenarios = pd.DataFrame([
-    {"Scenario": "Mild stress", "Shock %": 20, "Cut dividends": False},
-    {"Scenario": "Base stress", "Shock %": 50, "Cut dividends": True},
-    {"Scenario": "Severe stress", "Shock %": 80, "Cut dividends": True}
+    {"Scenario": "Mild stress", "Shock %": 5, "Use reserve first": True, "Cut dividends": False},
+    {"Scenario": "Base stress", "Shock %": 35, "Use reserve first": True, "Cut dividends": True},
+    {"Scenario": "Severe stress", "Shock %": 60, "Use reserve first": True, "Cut dividends": True}
 ])
 
 results = []
@@ -102,23 +108,27 @@ for _, r in scenarios.iterrows():
     s_btc = future_btc_price * (1 - r["Shock %"] / 100)
     effective_dividends = 0 if r["Cut dividends"] else annual_pref_dividends_th
     obligations = effective_dividends + annual_interest_th
-    gap = obligations - cash_th
-    btc_sell = max(0.0, (gap * 1000.0) / s_btc) if s_btc > 0 else np.nan
+    residual_gap = max(0.0, obligations - cash_th)
+    btc_sell = max(0.0, (residual_gap * 1000.0) / s_btc) if s_btc > 0 else np.nan
+    dividend_action = "Cut" if r["Cut dividends"] else "Keep"
+    outcome = "Covered" if residual_gap <= 0 else "Need BTC sale"
+
     results.append({
         "Scenario": r["Scenario"],
         "Shock %": r["Shock %"],
-        "BTC price": round(s_btc, 0),
-        "Need sell BTC": "Yes" if btc_sell > 0 else "No",
-        "BTC to sell": round(btc_sell, 2),
-        "Cut dividends": "Yes" if r["Cut dividends"] else "No",
+        "BTC price after shock": round(s_btc, 0),
+        "Liquidity available (thousands USD)": round(cash_th, 0),
         "Annual obligations (thousands USD)": round(obligations, 0),
-        "Liquidity gap (thousands USD)": round(gap, 0)
+        "Dividend action": dividend_action,
+        "BTC sold": round(btc_sell, 2),
+        "Residual gap (thousands USD)": round(residual_gap, 0),
+        "Outcome": outcome
     })
 
 results_df = pd.DataFrame(results)
 st.dataframe(results_df, use_container_width=True)
 
 fig2 = go.Figure()
-fig2.add_trace(go.Bar(x=results_df["Scenario"], y=results_df["BTC to sell"], name="BTC to sell"))
-fig2.update_layout(height=450, yaxis_title="BTC to sell", xaxis_title="Scenario")
+fig2.add_trace(go.Bar(x=results_df["Scenario"], y=results_df["BTC sold"], name="BTC sold"))
+fig2.update_layout(height=450, yaxis_title="BTC sold", xaxis_title="Scenario")
 st.plotly_chart(fig2, use_container_width=True)
