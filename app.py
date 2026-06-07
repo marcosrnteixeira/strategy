@@ -19,14 +19,14 @@ st.sidebar.header("Assumptions")
 
 btc_holdings = st.sidebar.number_input("BTC holdings (BTC)", value=717131.0, step=1000.0)
 diluted_shares = st.sidebar.number_input("Diluted shares (shares)", value=344.897e6, step=1e6)
-future_btc_price = st.sidebar.slider("Future BTC price (USD/BTC)", 10000, 500000, 150000, 5000)
+future_btc_price = st.sidebar.number_input("Future BTC price (USD/BTC)", value=150000.0, step=1000.0, min_value=10000.0, max_value=500000.0)
 mnav = st.sidebar.slider("MNAV multiple", 0.2, 3.0, 1.2, 0.05)
 
 cash_th = st.sidebar.number_input("Cash / USD reserve (thousands USD)", value=2301470.0, step=1000.0)
-debt_th = st.sidebar.number_input("Debt (thousands USD)", value=8250000.0, step=1000.0)
+debt_th = st.sidebar.number_input("Debt (thousands USD)", value=8254000.0, step=1000.0)
 preferred_claims_th = st.sidebar.number_input("Preferred claims / buffer (thousands USD)", value=0.0, step=1000.0)
-annual_pref_dividends_th = st.sidebar.number_input("Annual preferred dividends (thousands USD)", value=0.0, step=1000.0)
-annual_interest_th = st.sidebar.number_input("Annual debt interest (thousands USD)", value=0.0, step=1000.0)
+annual_pref_dividends_th = st.sidebar.number_input("Annual preferred dividends (thousands USD)", value=381367.0, step=1000.0)
+annual_interest_th = st.sidebar.number_input("Annual debt interest (thousands USD)", value=64968.0, step=1000.0)
 
 cash_usd = cash_th * 1000.0
 debt_usd = debt_th * 1000.0
@@ -89,14 +89,36 @@ st.write(
     "If annual obligations exceed available liquidity, the model estimates how much BTC would need to be sold to cover the shortfall."
 )
 
-st.subheader("Scenario table")
+st.subheader("3 stress scenarios")
 
-scenarios = pd.DataFrame({
-    "BTC price": [future_btc_price * 0.5, future_btc_price, future_btc_price * 1.5],
-    "MNAV": [0.8, 1.2, 1.8]
-})
-scenarios["MSTR implied"] = scenarios.apply(
-    lambda r: ((((btc_holdings * r["BTC price"]) + cash_usd - debt_usd - preferred_claims_usd) / diluted_shares) * r["MNAV"]),
-    axis=1
-)
-st.dataframe(scenarios, use_container_width=True)
+scenarios = pd.DataFrame([
+    {"Scenario": "Mild stress", "Shock %": 20, "Cut dividends": False},
+    {"Scenario": "Base stress", "Shock %": 50, "Cut dividends": True},
+    {"Scenario": "Severe stress", "Shock %": 80, "Cut dividends": True}
+])
+
+results = []
+for _, r in scenarios.iterrows():
+    s_btc = future_btc_price * (1 - r["Shock %"] / 100)
+    effective_dividends = 0 if r["Cut dividends"] else annual_pref_dividends_th
+    obligations = effective_dividends + annual_interest_th
+    gap = obligations - cash_th
+    btc_sell = max(0.0, (gap * 1000.0) / s_btc) if s_btc > 0 else np.nan
+    results.append({
+        "Scenario": r["Scenario"],
+        "Shock %": r["Shock %"],
+        "BTC price": round(s_btc, 0),
+        "Need sell BTC": "Yes" if btc_sell > 0 else "No",
+        "BTC to sell": round(btc_sell, 2),
+        "Cut dividends": "Yes" if r["Cut dividends"] else "No",
+        "Annual obligations (thousands USD)": round(obligations, 0),
+        "Liquidity gap (thousands USD)": round(gap, 0)
+    })
+
+results_df = pd.DataFrame(results)
+st.dataframe(results_df, use_container_width=True)
+
+fig2 = go.Figure()
+fig2.add_trace(go.Bar(x=results_df["Scenario"], y=results_df["BTC to sell"], name="BTC to sell"))
+fig2.update_layout(height=450, yaxis_title="BTC to sell", xaxis_title="Scenario")
+st.plotly_chart(fig2, use_container_width=True)
